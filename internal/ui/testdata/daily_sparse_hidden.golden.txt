@@ -1,0 +1,10 @@
+Command: gs
+View: typed | Granularity: daily | Days: 30 | Window: active | Sessions: no | Inclusion: all-runs
+Runs: 4 | Mean: 22ms | Median: 22ms | P95: 26ms
+Active points: 2 buckets with runs (2026-01-02 to 2026-01-05)
+
+Trend chart hidden (need at least 3 active buckets).
+
+Recent buckets
+- 2026-01-02 median=18ms     p95=19ms     n=2    delta=-       
+- 2026-01-05 median=26ms     p95=26ms     n=2    delta=+7ms    

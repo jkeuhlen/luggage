@@ -1,0 +1,19 @@
+Command: gs
+View: typed | Granularity: daily | Days: 90 | Window: full | Sessions: no | Inclusion: all-runs
+Runs: 15 | Mean: 33ms | Median: 36ms | P95: 46ms
+Active points: 5 buckets with runs (2026-01-02 to 2026-01-11)
+
+Trend (unicode sparkline; higher is slower)
+median |·▁·▃··▆·█·▇·|
+p95↑   |·▴·▴····▴···|
+ticks  |┬──┬──┬──┬─┬|
+dates  start=2026-01-01 end=2026-01-12
+scale  median 18ms -> 45ms
+range  2026-01-01 -> 2026-01-12
+
+Recent buckets
+- 2026-01-02 median=18ms     p95=20ms     n=3    delta=-       
+- 2026-01-04 median=24ms     p95=27ms     n=3    delta=+6ms    
+- 2026-01-07 median=36ms     p95=39ms     n=3    delta=+12ms   
+- 2026-01-09 median=45ms     p95=50ms     n=3    delta=+9ms    
+- 2026-01-11 median=41ms     p95=43ms     n=3    delta=-4ms    

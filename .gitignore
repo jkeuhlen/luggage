@@ -1,0 +1,9 @@
+# Build artifacts
+luggage
+
+# Go caches (local for sandbox-friendly builds)
+.gocache/
+.gomodcache/
+
+# macOS
+.DS_Store
