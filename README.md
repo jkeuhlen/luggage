@@ -94,6 +94,15 @@ luggage sessions
 luggage sessions ghciwatch
 ```
 
+Waiting-time breakdown (where CLI wait time is going):
+
+```bash
+luggage wait --days 30 --limit 10
+luggage wait --days 30 --limit 3 --compare
+luggage wait --days 30 --compare --compare-days 30 --this-repo
+luggage wait --days 30 --sub-limit 5
+```
+
 Config:
 
 ```bash

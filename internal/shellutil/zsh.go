@@ -128,6 +128,7 @@ _luggage() {
     install
     init
     time
+    wait
     sessions
     config
     completion
@@ -222,6 +223,20 @@ _luggage() {
         return
       fi
       _luggage_recent_time_commands "$cur"
+      ;;
+    wait)
+      if [[ "$prev" == "--pwd" || "$prev" == "--cwd" || "$prev" == "--git-root" ]]; then
+        _files -/
+        return
+      fi
+      if [[ "$prev" == "--view" ]]; then
+        compadd -Q -U -- typed resolved
+        return
+      fi
+      if [[ "$cur" == --* ]]; then
+        compadd -Q -U -- --days --limit --sub-limit --view --compare --compare-days --pwd --cwd --git-root --here --this-repo --include-sessions --success-only
+        return
+      fi
       ;;
     version|help)
       ;;

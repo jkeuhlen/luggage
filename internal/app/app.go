@@ -56,6 +56,8 @@ func (a *App) Run(args []string) int {
 		return a.runRecord(args[1:])
 	case "time":
 		return a.runTime(args[1:])
+	case "wait":
+		return a.runWait(args[1:])
 	case "sessions":
 		return a.runSessions(args[1:])
 	case "config":
@@ -81,6 +83,7 @@ Usage:
   luggage version
   luggage record --started-at <epoch-seconds> --ended-at <epoch-seconds> --typed <cmd> --resolved <key> --exit-code <code> --cwd <path>
   luggage time <command> [--days N] [--granularity hourly|daily|weekly] [--view typed|resolved] [--window active|full] [--show-empty] [--pwd PATH|--cwd PATH] [--git-root PATH] [--here] [--this-repo] [--include-sessions] [--success-only]
+  luggage wait [--days N] [--limit N] [--sub-limit N] [--view typed|resolved] [--compare] [--compare-days N] [--pwd PATH|--cwd PATH] [--git-root PATH] [--here] [--this-repo] [--include-sessions] [--success-only]
   luggage sessions [command] [--days N] [--view typed|resolved]
   luggage config get [key]
   luggage config set <key> <value>
@@ -363,39 +366,10 @@ func (a *App) runTime(args []string) int {
 		fmt.Fprintln(a.Stderr, "usage: luggage time <command> [flags]")
 		return 1
 	}
-	if *pwdFilter != "" && *cwdFilter != "" && *pwdFilter != *cwdFilter {
-		fmt.Fprintln(a.Stderr, "--pwd and --cwd provided with different values")
+	filters, err := resolveScopeFilters(*pwdFilter, *cwdFilter, *gitRootFilter, *here, *thisRepo)
+	if err != nil {
+		fmt.Fprintln(a.Stderr, err)
 		return 1
-	}
-	if *cwdFilter == "" {
-		*cwdFilter = *pwdFilter
-	}
-	if *here {
-		wd, err := os.Getwd()
-		if err != nil {
-			fmt.Fprintln(a.Stderr, err)
-			return 1
-		}
-		*cwdFilter = wd
-	}
-	if *thisRepo {
-		wd, err := os.Getwd()
-		if err != nil {
-			fmt.Fprintln(a.Stderr, err)
-			return 1
-		}
-		root := detectGitRoot(wd)
-		if root == "" {
-			fmt.Fprintln(a.Stderr, "current working directory is not inside a git repository")
-			return 1
-		}
-		*gitRootFilter = root
-	}
-	if *cwdFilter != "" {
-		*cwdFilter = filepath.Clean(*cwdFilter)
-	}
-	if *gitRootFilter != "" {
-		*gitRootFilter = filepath.Clean(*gitRootFilter)
 	}
 	query := strings.Join(queryArgs, " ")
 	exactMatch := strings.Contains(query, " ")
@@ -409,8 +383,8 @@ func (a *App) runTime(args []string) int {
 		View:            *view,
 		IncludeSessions: *includeSessions,
 		SuccessOnly:     *successOnly,
-		CwdPrefix:       *cwdFilter,
-		GitRoot:         *gitRootFilter,
+		CwdPrefix:       filters.Cwd,
+		GitRoot:         filters.GitRoot,
 	})
 	if err != nil {
 		fmt.Fprintln(a.Stderr, err)
@@ -428,9 +402,189 @@ func (a *App) runTime(args []string) int {
 		Window:          *window,
 		IncludeSessions: *includeSessions,
 		SuccessOnly:     *successOnly,
-		CwdFilter:       *cwdFilter,
-		GitRootFilter:   *gitRootFilter,
+		CwdFilter:       filters.Cwd,
+		GitRootFilter:   filters.GitRoot,
 	}, buckets)
+	fmt.Fprint(a.Stdout, report)
+	return 0
+}
+
+func (a *App) runWait(args []string) int {
+	cfg, st, err := a.openStore()
+	if err != nil {
+		fmt.Fprintln(a.Stderr, err)
+		return 1
+	}
+	defer st.Close()
+
+	fs := flag.NewFlagSet("wait", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	days := fs.Int("days", 30, "days to look back")
+	limit := fs.Int("limit", 10, "max commands to display")
+	subLimit := fs.Int("sub-limit", 3, "subcommands to show per top command (0 to disable)")
+	view := fs.String("view", cfg.DefaultView, "typed|resolved")
+	compare := fs.Bool("compare", false, "compare to previous period")
+	compareDays := fs.Int("compare-days", 0, "length of comparison period in days (defaults to --days)")
+	pwdFilter := fs.String("pwd", "", "cwd prefix filter")
+	cwdFilter := fs.String("cwd", "", "cwd prefix filter (alias of --pwd)")
+	gitRootFilter := fs.String("git-root", "", "git root filter")
+	here := fs.Bool("here", false, "filter to current working directory")
+	thisRepo := fs.Bool("this-repo", false, "filter to current git repository root")
+	includeSessions := fs.Bool("include-sessions", false, "include long-lived sessions")
+	successOnly := fs.Bool("success-only", false, "only include successful runs")
+
+	flagArgs, positionals := splitFlagsAndPositionals(
+		args,
+		map[string]bool{
+			"--compare":          true,
+			"--here":             true,
+			"--this-repo":        true,
+			"--include-sessions": true,
+			"--success-only":     true,
+		},
+		map[string]bool{
+			"--days":         true,
+			"--limit":        true,
+			"--sub-limit":    true,
+			"--view":         true,
+			"--compare-days": true,
+			"--pwd":          true,
+			"--cwd":          true,
+			"--git-root":     true,
+		},
+	)
+	if err := fs.Parse(flagArgs); err != nil {
+		fmt.Fprintln(a.Stderr, err)
+		return 1
+	}
+	if len(positionals) > 0 {
+		fmt.Fprintln(a.Stderr, "usage: luggage wait [flags]")
+		return 1
+	}
+	if *days <= 0 {
+		fmt.Fprintln(a.Stderr, "--days must be > 0")
+		return 1
+	}
+	if *limit <= 0 {
+		fmt.Fprintln(a.Stderr, "--limit must be > 0")
+		return 1
+	}
+	if *subLimit < 0 {
+		fmt.Fprintln(a.Stderr, "--sub-limit must be >= 0")
+		return 1
+	}
+	if *compareDays == 0 {
+		*compareDays = *days
+	}
+	if *compareDays < 0 {
+		fmt.Fprintln(a.Stderr, "--compare-days must be >= 0")
+		return 1
+	}
+	switch *view {
+	case "typed", "resolved":
+	default:
+		fmt.Fprintln(a.Stderr, "--view must be typed|resolved")
+		return 1
+	}
+
+	filters, err := resolveScopeFilters(*pwdFilter, *cwdFilter, *gitRootFilter, *here, *thisRepo)
+	if err != nil {
+		fmt.Fprintln(a.Stderr, err)
+		return 1
+	}
+
+	now := time.Now()
+	currentStart := now.AddDate(0, 0, -*days)
+	queryStart := currentStart
+	prevStart := time.Time{}
+	prevEnd := time.Time{}
+	if *compare {
+		prevEnd = currentStart
+		prevStart = prevEnd.AddDate(0, 0, -*compareDays)
+		queryStart = prevStart
+	}
+
+	rows, err := st.QueryRuns(store.QueryOptions{
+		Start:           queryStart,
+		View:            *view,
+		IncludeSessions: *includeSessions,
+		SuccessOnly:     *successOnly,
+		CwdPrefix:       filters.Cwd,
+		GitRoot:         filters.GitRoot,
+	})
+	if err != nil {
+		fmt.Fprintln(a.Stderr, err)
+		return 1
+	}
+
+	currentEntries, currentTotalMs, currentRuns := aggregateWaitEntries(rows, *view, currentStart, now)
+	prevEntriesMap := map[string]waitEntry{}
+	prevTotalMs := 0.0
+	prevRuns := 0
+	if *compare {
+		prevEntries, totalMs, runs := aggregateWaitEntries(rows, *view, prevStart, prevEnd)
+		prevTotalMs = totalMs
+		prevRuns = runs
+		for _, e := range prevEntries {
+			prevEntriesMap[e.Command] = e
+		}
+	}
+
+	limitN := *limit
+	if len(currentEntries) < limitN {
+		limitN = len(currentEntries)
+	}
+	reportEntries := make([]ui.WaitEntry, 0, limitN)
+	topTokenSet := make(map[string]bool, limitN)
+	for i := 0; i < limitN; i++ {
+		cur := currentEntries[i]
+		topTokenSet[cur.Command] = true
+		prev := prevEntriesMap[cur.Command]
+		reportEntries = append(reportEntries, ui.WaitEntry{
+			Command:        cur.Command,
+			CurrentTotalMs: cur.TotalMs,
+			CurrentRuns:    cur.Runs,
+			CurrentMeanMs:  cur.MeanMs,
+			PrevTotalMs:    prev.TotalMs,
+			PrevRuns:       prev.Runs,
+			PrevMeanMs:     prev.MeanMs,
+		})
+	}
+	subBreakdowns := aggregateWaitSubcommands(rows, *view, currentStart, now, topTokenSet, *subLimit)
+	for i := range reportEntries {
+		if subs := subBreakdowns[reportEntries[i].Command]; len(subs) > 0 {
+			reportEntries[i].Subcommands = make([]ui.WaitSubEntry, 0, len(subs))
+			for _, sub := range subs {
+				reportEntries[i].Subcommands = append(reportEntries[i].Subcommands, ui.WaitSubEntry{
+					Command: sub.Command,
+					TotalMs: sub.TotalMs,
+					Runs:    sub.Runs,
+					MeanMs:  sub.MeanMs,
+				})
+			}
+		}
+	}
+
+	report := ui.RenderWaitReport(ui.WaitReportParams{
+		Days:            *days,
+		Limit:           *limit,
+		View:            *view,
+		Compare:         *compare,
+		CompareDays:     *compareDays,
+		IncludeSessions: *includeSessions,
+		SuccessOnly:     *successOnly,
+		CwdFilter:       filters.Cwd,
+		GitRootFilter:   filters.GitRoot,
+		CurrentStart:    currentStart,
+		CurrentEnd:      now,
+		PrevStart:       prevStart,
+		PrevEnd:         prevEnd,
+	}, reportEntries, ui.WaitTotals{
+		CurrentTotalMs: currentTotalMs,
+		CurrentRuns:    currentRuns,
+		PrevTotalMs:    prevTotalMs,
+		PrevRuns:       prevRuns,
+	})
 	fmt.Fprint(a.Stdout, report)
 	return 0
 }
@@ -658,6 +812,28 @@ func firstToken(s string) string {
 	return parts[0]
 }
 
+func subcomponentLabel(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "(empty)"
+	}
+	parts := strings.Fields(s)
+	if len(parts) == 0 {
+		return "(empty)"
+	}
+	root := parts[0]
+	if len(parts) == 1 {
+		return root + " (default)"
+	}
+	for i := 1; i < len(parts); i++ {
+		p := parts[i]
+		if p != "" && !strings.HasPrefix(p, "-") {
+			return root + " " + p
+		}
+	}
+	return root + " (flags)"
+}
+
 func clamp(in string, n int) string {
 	if len(in) <= n {
 		return in
@@ -727,6 +903,180 @@ func splitFlagsAndPositionals(args []string, boolFlags, valueFlags map[string]bo
 		positionals = append(positionals, arg)
 	}
 	return flagArgs, positionals
+}
+
+type scopeFilters struct {
+	Cwd     string
+	GitRoot string
+}
+
+func resolveScopeFilters(pwdFilter, cwdFilter, gitRootFilter string, here, thisRepo bool) (scopeFilters, error) {
+	if pwdFilter != "" && cwdFilter != "" && pwdFilter != cwdFilter {
+		return scopeFilters{}, errors.New("--pwd and --cwd provided with different values")
+	}
+	if cwdFilter == "" {
+		cwdFilter = pwdFilter
+	}
+	if here {
+		wd, err := os.Getwd()
+		if err != nil {
+			return scopeFilters{}, err
+		}
+		cwdFilter = wd
+	}
+	if thisRepo {
+		wd, err := os.Getwd()
+		if err != nil {
+			return scopeFilters{}, err
+		}
+		root := detectGitRoot(wd)
+		if root == "" {
+			return scopeFilters{}, errors.New("current working directory is not inside a git repository")
+		}
+		gitRootFilter = root
+	}
+	if cwdFilter != "" {
+		cwdFilter = filepath.Clean(cwdFilter)
+	}
+	if gitRootFilter != "" {
+		gitRootFilter = filepath.Clean(gitRootFilter)
+	}
+	return scopeFilters{Cwd: cwdFilter, GitRoot: gitRootFilter}, nil
+}
+
+type waitEntry struct {
+	Command string
+	TotalMs float64
+	Runs    int
+	MeanMs  float64
+}
+
+type waitSubEntry struct {
+	Command string
+	TotalMs float64
+	Runs    int
+	MeanMs  float64
+}
+
+func aggregateWaitEntries(rows []store.RunRow, view string, start, end time.Time) ([]waitEntry, float64, int) {
+	type agg struct {
+		total float64
+		runs  int
+	}
+	groups := map[string]*agg{}
+	totalMs := 0.0
+	totalRuns := 0
+
+	for _, row := range rows {
+		if row.StartedAt.Before(start) || !row.StartedAt.Before(end) {
+			continue
+		}
+		token := row.TypedCmd
+		if view == "resolved" {
+			token = row.Resolved
+		}
+		token = firstToken(token)
+		if token == "" {
+			token = "(empty)"
+		}
+		entry := groups[token]
+		if entry == nil {
+			entry = &agg{}
+			groups[token] = entry
+		}
+		entry.total += row.Duration
+		entry.runs++
+		totalMs += row.Duration
+		totalRuns++
+	}
+
+	out := make([]waitEntry, 0, len(groups))
+	for cmd, ag := range groups {
+		out = append(out, waitEntry{
+			Command: cmd,
+			TotalMs: ag.total,
+			Runs:    ag.runs,
+			MeanMs:  ag.total / float64(ag.runs),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].TotalMs == out[j].TotalMs {
+			if out[i].Runs == out[j].Runs {
+				return out[i].Command < out[j].Command
+			}
+			return out[i].Runs > out[j].Runs
+		}
+		return out[i].TotalMs > out[j].TotalMs
+	})
+	return out, totalMs, totalRuns
+}
+
+func aggregateWaitSubcommands(rows []store.RunRow, view string, start, end time.Time, tokens map[string]bool, limit int) map[string][]waitSubEntry {
+	type agg struct {
+		total float64
+		runs  int
+	}
+	perToken := map[string]map[string]*agg{}
+
+	for _, row := range rows {
+		if row.StartedAt.Before(start) || !row.StartedAt.Before(end) {
+			continue
+		}
+		full := strings.TrimSpace(row.TypedCmd)
+		if view == "resolved" {
+			full = strings.TrimSpace(row.Resolved)
+		}
+		if full == "" {
+			full = "(empty)"
+		}
+		token := firstToken(full)
+		if token == "" {
+			token = "(empty)"
+		}
+		if !tokens[token] {
+			continue
+		}
+		tokenMap := perToken[token]
+		if tokenMap == nil {
+			tokenMap = map[string]*agg{}
+			perToken[token] = tokenMap
+		}
+		subKey := subcomponentLabel(full)
+		entry := tokenMap[subKey]
+		if entry == nil {
+			entry = &agg{}
+			tokenMap[subKey] = entry
+		}
+		entry.total += row.Duration
+		entry.runs++
+	}
+
+	out := make(map[string][]waitSubEntry, len(perToken))
+	for token, subMap := range perToken {
+		subs := make([]waitSubEntry, 0, len(subMap))
+		for cmd, ag := range subMap {
+			subs = append(subs, waitSubEntry{
+				Command: cmd,
+				TotalMs: ag.total,
+				Runs:    ag.runs,
+				MeanMs:  ag.total / float64(ag.runs),
+			})
+		}
+		sort.Slice(subs, func(i, j int) bool {
+			if subs[i].TotalMs == subs[j].TotalMs {
+				if subs[i].Runs == subs[j].Runs {
+					return subs[i].Command < subs[j].Command
+				}
+				return subs[i].Runs > subs[j].Runs
+			}
+			return subs[i].TotalMs > subs[j].TotalMs
+		})
+		if limit > 0 && len(subs) > limit {
+			subs = subs[:limit]
+		}
+		out[token] = subs
+	}
+	return out
 }
 
 func defaultBinaryDir() (string, error) {
