@@ -8,6 +8,8 @@
 go build -o luggage ./cmd/luggage
 ```
 
+This repo pins `toolchain go1.24.12` for consistent local/CI results.
+
 ## Install zsh hooks + completion
 
 Print snippet:
@@ -96,6 +98,28 @@ Sample chart outputs from tests:
 ```bash
 go test ./internal/ui -run TestSampleCharts -v
 ```
+
+## Quality Gates
+
+Run the full local guard-rail suite:
+
+```bash
+make ci
+```
+
+Useful targets:
+
+```bash
+make fmt
+make fmt-check
+make lint
+make test
+make test-race
+make vuln
+make coverage-check
+```
+
+CI runs the same checks on every push/PR via `.github/workflows/ci.yml`.
 
 ## Notes
 

@@ -1,5 +1,7 @@
 # Build artifacts
 luggage
+.bin/
+coverage.out
 
 # Go caches (local for sandbox-friendly builds)
 .gocache/
