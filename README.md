@@ -18,6 +18,24 @@ Print snippet:
 ./luggage init zsh
 ```
 
+One-step install (binary + zsh integration + completion):
+
+```bash
+./luggage install
+```
+
+Install binary only:
+
+```bash
+./luggage install --no-shell
+```
+
+Custom binary directory:
+
+```bash
+./luggage install --bin-dir ~/.local/bin
+```
+
 Install into `~/.zshrc` and `~/.zfunc/_luggage` (idempotent update):
 
 ```bash

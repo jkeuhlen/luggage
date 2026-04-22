@@ -125,6 +125,7 @@ _luggage() {
   local -a top_cmds config_keys
 
   top_cmds=(
+    install
     init
     time
     sessions
@@ -160,6 +161,17 @@ _luggage() {
   arg_idx=$((cmd_idx + 1))
 
   case "$subcmd" in
+    install)
+      if [[ "$prev" == "--bin-dir" ]]; then
+        _files -/
+        return
+      fi
+      if [[ "$prev" == "--shell" ]]; then
+        compadd -Q -U -- zsh
+        return
+      fi
+      compadd -Q -U -- --bin-dir --shell --no-shell
+      ;;
     init)
       if (( CURRENT == arg_idx )); then
         compadd -Q -U -- zsh

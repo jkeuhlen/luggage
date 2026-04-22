@@ -22,6 +22,7 @@ import (
 )
 
 const maxCommandLength = 4096
+const binaryName = "luggage"
 
 var Version = "0.0.1"
 
@@ -49,6 +50,8 @@ func (a *App) Run(args []string) int {
 		return 0
 	case "init":
 		return a.runInit(args[1:])
+	case "install":
+		return a.runInstall(args[1:])
 	case "record":
 		return a.runRecord(args[1:])
 	case "time":
@@ -72,6 +75,7 @@ func (a *App) printUsage() {
 	fmt.Fprintln(a.Stdout, `luggage - command timing trends for zsh
 
 Usage:
+  luggage install [--bin-dir PATH] [--shell zsh] [--no-shell]
   luggage init zsh [--install]
   luggage completion zsh
   luggage version
@@ -88,6 +92,69 @@ Config keys:
 
 func (a *App) printVersion() {
 	fmt.Fprintln(a.Stdout, Version)
+}
+
+func (a *App) runInstall(args []string) int {
+	defaultBinDir, err := defaultBinaryDir()
+	if err != nil {
+		fmt.Fprintln(a.Stderr, err)
+		return 1
+	}
+
+	fs := flag.NewFlagSet("install", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	binDir := fs.String("bin-dir", defaultBinDir, "installation directory for luggage binary")
+	shell := fs.String("shell", "zsh", "shell integration to install")
+	noShell := fs.Bool("no-shell", false, "skip shell hook and completion setup")
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(a.Stderr, err)
+		return 1
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(a.Stderr, "usage: luggage install [--bin-dir PATH] [--shell zsh] [--no-shell]")
+		return 1
+	}
+	if !*noShell && *shell != "zsh" {
+		fmt.Fprintf(a.Stderr, "unsupported shell: %s (only zsh is currently supported)\n", *shell)
+		return 1
+	}
+
+	exePath, err := os.Executable()
+	if err != nil {
+		fmt.Fprintln(a.Stderr, err)
+		return 1
+	}
+	targetPath := filepath.Join(*binDir, binaryName)
+	installed, err := installBinary(exePath, targetPath)
+	if err != nil {
+		fmt.Fprintln(a.Stderr, err)
+		return 1
+	}
+	if installed {
+		fmt.Fprintf(a.Stdout, "installed binary to %s\n", targetPath)
+	} else {
+		fmt.Fprintf(a.Stdout, "binary already installed at %s\n", targetPath)
+	}
+
+	if *noShell {
+		fmt.Fprintln(a.Stdout, "shell setup skipped (--no-shell)")
+		return 0
+	}
+
+	snippetPath, err := shellutil.InstallZshSnippet()
+	if err != nil {
+		fmt.Fprintln(a.Stderr, err)
+		return 1
+	}
+	compPath, err := shellutil.InstallZshCompletionFile()
+	if err != nil {
+		fmt.Fprintln(a.Stderr, err)
+		return 1
+	}
+	fmt.Fprintf(a.Stdout, "installed zsh integration in %s\n", snippetPath)
+	fmt.Fprintf(a.Stdout, "installed zsh completion in %s\n", compPath)
+	fmt.Fprintln(a.Stdout, "restart your shell or run: exec zsh")
+	return 0
 }
 
 func (a *App) runInit(args []string) int {
@@ -660,4 +727,75 @@ func splitFlagsAndPositionals(args []string, boolFlags, valueFlags map[string]bo
 		positionals = append(positionals, arg)
 	}
 	return flagArgs, positionals
+}
+
+func defaultBinaryDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".local", "bin"), nil
+}
+
+func installBinary(srcPath, dstPath string) (bool, error) {
+	srcAbs, err := filepath.Abs(srcPath)
+	if err != nil {
+		return false, err
+	}
+	dstAbs, err := filepath.Abs(dstPath)
+	if err != nil {
+		return false, err
+	}
+	if sameFilePath(srcAbs, dstAbs) {
+		return false, nil
+	}
+
+	if err := os.MkdirAll(filepath.Dir(dstAbs), 0o755); err != nil {
+		return false, err
+	}
+
+	srcFile, err := os.Open(srcAbs)
+	if err != nil {
+		return false, err
+	}
+	defer srcFile.Close()
+
+	tmpPath := dstAbs + ".tmp"
+	dstFile, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		_ = dstFile.Close()
+		_ = os.Remove(tmpPath)
+	}()
+
+	if _, err := io.Copy(dstFile, srcFile); err != nil {
+		return false, err
+	}
+	if err := dstFile.Sync(); err != nil {
+		return false, err
+	}
+	if err := dstFile.Close(); err != nil {
+		return false, err
+	}
+	if err := os.Chmod(tmpPath, 0o755); err != nil {
+		return false, err
+	}
+	if err := os.Rename(tmpPath, dstAbs); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func sameFilePath(a, b string) bool {
+	if a == b {
+		return true
+	}
+	aEval, aErr := filepath.EvalSymlinks(a)
+	bEval, bErr := filepath.EvalSymlinks(b)
+	if aErr == nil && bErr == nil && aEval == bEval {
+		return true
+	}
+	return false
 }
