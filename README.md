@@ -103,6 +103,15 @@ luggage wait --days 30 --compare --compare-days 30 --this-repo
 luggage wait --days 30 --sub-limit 5
 ```
 
+Context switching / command location analysis:
+
+```bash
+luggage context --days 14
+luggage context --days 14 --location cwd --top 5
+luggage context --report timeline --days 2 --granularity hourly
+luggage context --report timeline --days 30 --granularity daily --this-repo
+```
+
 Config:
 
 ```bash

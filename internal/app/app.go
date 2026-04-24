@@ -60,6 +60,8 @@ func (a *App) Run(args []string) int {
 		return a.runWait(args[1:])
 	case "sessions":
 		return a.runSessions(args[1:])
+	case "context":
+		return a.runContext(args[1:])
 	case "config":
 		return a.runConfig(args[1:])
 	case "completion":
@@ -85,6 +87,7 @@ Usage:
   luggage time <command> [--days N] [--granularity hourly|daily|weekly] [--view typed|resolved] [--window active|full] [--show-empty] [--pwd PATH|--cwd PATH] [--git-root PATH] [--here] [--this-repo] [--include-sessions] [--success-only]
   luggage wait [--days N] [--limit N] [--sub-limit N] [--view typed|resolved] [--compare] [--compare-days N] [--pwd PATH|--cwd PATH] [--git-root PATH] [--here] [--this-repo] [--include-sessions] [--success-only]
   luggage sessions [command] [--days N] [--view typed|resolved]
+  luggage context [--report summary|timeline] [--days N] [--location repo|cwd] [--top N] [--granularity hourly|daily] [--idle-cutoff-min N] [--block-gap-min N] [--pwd PATH|--cwd PATH] [--git-root PATH] [--here] [--this-repo] [--include-sessions] [--success-only]
   luggage config get [key]
   luggage config set <key> <value>
 

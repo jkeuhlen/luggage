@@ -34,6 +34,8 @@ type RunRow struct {
 	IsSession bool
 	TypedCmd  string
 	Resolved  string
+	Cwd       string
+	GitRoot   string
 }
 
 func Open(dbPath string) (*Store, error) {
@@ -148,7 +150,7 @@ func (s *Store) QueryRuns(opts QueryOptions) ([]RunRow, error) {
 	}
 
 	query := fmt.Sprintf(`
-SELECT started_at_ms, duration_ms, exit_code, is_session, typed_cmd, resolved_cmd_key
+SELECT started_at_ms, duration_ms, exit_code, is_session, typed_cmd, resolved_cmd_key, cwd, git_root
 FROM runs
 WHERE %s
 ORDER BY started_at_ms ASC
@@ -168,7 +170,9 @@ ORDER BY started_at_ms ASC
 		var isSession int
 		var typed string
 		var resolved string
-		if err := rows.Scan(&startedMs, &duration, &exitCode, &isSession, &typed, &resolved); err != nil {
+		var cwd string
+		var gitRoot string
+		if err := rows.Scan(&startedMs, &duration, &exitCode, &isSession, &typed, &resolved, &cwd, &gitRoot); err != nil {
 			return nil, err
 		}
 		out = append(out, RunRow{
@@ -178,6 +182,8 @@ ORDER BY started_at_ms ASC
 			IsSession: isSession == 1,
 			TypedCmd:  typed,
 			Resolved:  resolved,
+			Cwd:       cwd,
+			GitRoot:   gitRoot,
 		})
 	}
 	return out, rows.Err()

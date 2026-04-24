@@ -130,6 +130,7 @@ _luggage() {
     time
     wait
     sessions
+    context
     config
     completion
     version
@@ -200,6 +201,28 @@ _luggage() {
         return
       fi
       compadd -Q -U -- --days --view
+      ;;
+    context)
+      if [[ "$prev" == "--pwd" || "$prev" == "--cwd" || "$prev" == "--git-root" ]]; then
+        _files -/
+        return
+      fi
+      if [[ "$prev" == "--report" ]]; then
+        compadd -Q -U -- summary timeline
+        return
+      fi
+      if [[ "$prev" == "--location" ]]; then
+        compadd -Q -U -- repo cwd
+        return
+      fi
+      if [[ "$prev" == "--granularity" ]]; then
+        compadd -Q -U -- hourly daily
+        return
+      fi
+      if [[ "$cur" == --* ]]; then
+        compadd -Q -U -- --report --days --location --top --granularity --idle-cutoff-min --block-gap-min --pwd --cwd --git-root --here --this-repo --include-sessions --success-only
+        return
+      fi
       ;;
     time)
       if [[ "$prev" == "--pwd" || "$prev" == "--cwd" || "$prev" == "--git-root" ]]; then
