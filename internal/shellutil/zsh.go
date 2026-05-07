@@ -144,6 +144,8 @@ _luggage() {
     session_cutoff_ms
     anomaly_window
     anomaly_sigma
+    session_patterns
+    long_task_patterns
   )
 
   cur="${words[CURRENT]}"

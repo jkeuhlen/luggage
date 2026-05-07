@@ -26,6 +26,15 @@ const binaryName = "luggage"
 
 var Version = "0.0.1"
 
+const (
+	classificationNormalDuration    = "normal_duration"
+	classificationPatternSession    = "pattern_session"
+	classificationPatternLongTask   = "pattern_long_task"
+	classificationHeuristicSession  = "heuristic_session"
+	classificationHeuristicLongTask = "heuristic_long_task"
+	classificationDurationLongTask  = "duration_long_task"
+)
+
 type App struct {
 	Stdout io.Writer
 	Stderr io.Writer
@@ -93,7 +102,8 @@ Usage:
 
 Config keys:
   default_days, default_granularity, default_inclusion, default_view,
-  session_cutoff_ms, anomaly_window, anomaly_sigma`)
+  session_cutoff_ms, anomaly_window, anomaly_sigma,
+  session_patterns, long_task_patterns`)
 }
 
 func (a *App) printVersion() {
@@ -287,18 +297,19 @@ func (a *App) runRecord(args []string) int {
 		}
 	}
 	gitRoot := detectGitRoot(cwdPath)
-	isSession := int64(durationMs) >= cfg.SessionCutoffMs
+	classification := classifyCommand(cfg, typedCmd, int64(durationMs))
 
 	run := store.Run{
-		StartedAtMs: startedMs,
-		EndedAtMs:   endedMs,
-		DurationMs:  durationMs,
-		TypedCmd:    typedCmd,
-		ResolvedCmd: resolvedKey,
-		ExitCode:    *exitCode,
-		Cwd:         clamp(cwdPath, maxCommandLength),
-		GitRoot:     clamp(gitRoot, maxCommandLength),
-		IsSession:   isSession,
+		StartedAtMs:          startedMs,
+		EndedAtMs:            endedMs,
+		DurationMs:           durationMs,
+		TypedCmd:             typedCmd,
+		ResolvedCmd:          resolvedKey,
+		ExitCode:             *exitCode,
+		Cwd:                  clamp(cwdPath, maxCommandLength),
+		GitRoot:              clamp(gitRoot, maxCommandLength),
+		IsSession:            classification.IsSession,
+		ClassificationReason: classification.Reason,
 	}
 	if err := st.InsertRun(run); err != nil {
 		return 1
@@ -813,6 +824,141 @@ func firstToken(s string) string {
 		return ""
 	}
 	return parts[0]
+}
+
+type commandClassification struct {
+	IsSession bool
+	Reason    string
+}
+
+func classifyCommand(cfg config.Config, typed string, durationMs int64) commandClassification {
+	normalized := normalizeCommandForMatch(typed)
+	if matchesAnyPattern(cfg.SessionPatterns, normalized) {
+		return commandClassification{IsSession: true, Reason: classificationPatternSession}
+	}
+	if matchesAnyPattern(cfg.LongTaskPatterns, normalized) {
+		return commandClassification{IsSession: false, Reason: classificationPatternLongTask}
+	}
+	if isBuiltInSessionCommand(normalized) {
+		return commandClassification{IsSession: true, Reason: classificationHeuristicSession}
+	}
+	if isBuiltInLongTaskCommand(normalized) {
+		return commandClassification{IsSession: false, Reason: classificationHeuristicLongTask}
+	}
+	if durationMs >= cfg.SessionCutoffMs {
+		return commandClassification{IsSession: false, Reason: classificationDurationLongTask}
+	}
+	return commandClassification{IsSession: false, Reason: classificationNormalDuration}
+}
+
+func normalizeCommandForMatch(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+func matchesAnyPattern(patterns []string, command string) bool {
+	for _, pattern := range patterns {
+		pattern = normalizeCommandForMatch(pattern)
+		if pattern == "" {
+			continue
+		}
+		if globMatch(pattern, command) {
+			return true
+		}
+	}
+	return false
+}
+
+func globMatch(pattern, text string) bool {
+	p := []rune(pattern)
+	t := []rune(text)
+	dp := make([][]bool, len(p)+1)
+	for i := range dp {
+		dp[i] = make([]bool, len(t)+1)
+	}
+	dp[0][0] = true
+	for i := 1; i <= len(p); i++ {
+		if p[i-1] == '*' {
+			dp[i][0] = dp[i-1][0]
+		}
+	}
+	for i := 1; i <= len(p); i++ {
+		for j := 1; j <= len(t); j++ {
+			switch p[i-1] {
+			case '*':
+				dp[i][j] = dp[i-1][j] || dp[i][j-1]
+			case '?':
+				dp[i][j] = dp[i-1][j-1]
+			default:
+				dp[i][j] = p[i-1] == t[j-1] && dp[i-1][j-1]
+			}
+		}
+	}
+	return dp[len(p)][len(t)]
+}
+
+func isBuiltInSessionCommand(command string) bool {
+	fields := lowerFields(command)
+	if len(fields) == 0 {
+		return false
+	}
+	if fields[0] == "tail" && hasField(fields[1:], "-f", "--follow") {
+		return true
+	}
+	if len(fields) >= 3 && fields[0] == "npm" && fields[1] == "run" && fields[2] == "dev" {
+		return true
+	}
+	for _, field := range fields {
+		if strings.HasPrefix(field, "-") {
+			continue
+		}
+		switch field {
+		case "ghci", "ghcid", "repl", "watch", "serve", "server", "dev":
+			return true
+		}
+		if strings.Contains(field, "ghci") || strings.Contains(field, "repl") || strings.Contains(field, "watch") {
+			return true
+		}
+	}
+	return false
+}
+
+func isBuiltInLongTaskCommand(command string) bool {
+	fields := lowerFields(command)
+	if len(fields) == 0 {
+		return false
+	}
+	if fields[0] == "nix-collect-garbage" {
+		return true
+	}
+	if len(fields) >= 2 && fields[0] == "nix" {
+		switch fields[1] {
+		case "build", "develop", "collect-garbage":
+			return true
+		}
+	}
+	if len(fields) >= 2 && (fields[0] == "cabal" || fields[0] == "stack") && fields[1] == "build" {
+		return true
+	}
+	return false
+}
+
+func lowerFields(command string) []string {
+	fields := strings.Fields(command)
+	for i := range fields {
+		fields[i] = strings.ToLower(fields[i])
+	}
+	return fields
+}
+
+func hasField(fields []string, needles ...string) bool {
+	for _, field := range fields {
+		for _, needle := range needles {
+			if field == needle {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func subcomponentLabel(s string) string {

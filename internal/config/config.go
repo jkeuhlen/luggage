@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 const (
@@ -20,13 +21,15 @@ const (
 )
 
 type Config struct {
-	DefaultDays        int     `json:"default_days"`
-	DefaultGranularity string  `json:"default_granularity"`
-	DefaultInclusion   string  `json:"default_inclusion"`
-	DefaultView        string  `json:"default_view"`
-	SessionCutoffMs    int64   `json:"session_cutoff_ms"`
-	AnomalyWindow      int     `json:"anomaly_window"`
-	AnomalySigma       float64 `json:"anomaly_sigma"`
+	DefaultDays        int      `json:"default_days"`
+	DefaultGranularity string   `json:"default_granularity"`
+	DefaultInclusion   string   `json:"default_inclusion"`
+	DefaultView        string   `json:"default_view"`
+	SessionCutoffMs    int64    `json:"session_cutoff_ms"`
+	AnomalyWindow      int      `json:"anomaly_window"`
+	AnomalySigma       float64  `json:"anomaly_sigma"`
+	SessionPatterns    []string `json:"session_patterns"`
+	LongTaskPatterns   []string `json:"long_task_patterns"`
 }
 
 func Default() Config {
@@ -38,6 +41,8 @@ func Default() Config {
 		SessionCutoffMs:    DefaultSessionCutoff,
 		AnomalyWindow:      DefaultAnomalyWindow,
 		AnomalySigma:       DefaultAnomalySigma,
+		SessionPatterns:    []string{},
+		LongTaskPatterns:   []string{},
 	}
 }
 
@@ -121,6 +126,12 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.AnomalySigma <= 0 {
 		c.AnomalySigma = DefaultAnomalySigma
+	}
+	if c.SessionPatterns == nil {
+		c.SessionPatterns = []string{}
+	}
+	if c.LongTaskPatterns == nil {
+		c.LongTaskPatterns = []string{}
 	}
 }
 
@@ -206,6 +217,10 @@ func SetValue(cfg *Config, key, value string) error {
 			return err
 		}
 		cfg.AnomalySigma = n
+	case "session_patterns":
+		cfg.SessionPatterns = parseCommaList(value)
+	case "long_task_patterns":
+		cfg.LongTaskPatterns = parseCommaList(value)
 	default:
 		return fmt.Errorf("unknown config key: %s", key)
 	}
@@ -229,6 +244,10 @@ func GetValue(cfg Config, key string) (string, error) {
 		return strconv.Itoa(cfg.AnomalyWindow), nil
 	case "anomaly_sigma":
 		return strconv.FormatFloat(cfg.AnomalySigma, 'f', -1, 64), nil
+	case "session_patterns":
+		return strings.Join(cfg.SessionPatterns, ","), nil
+	case "long_task_patterns":
+		return strings.Join(cfg.LongTaskPatterns, ","), nil
 	default:
 		return "", fmt.Errorf("unknown config key: %s", key)
 	}
@@ -243,5 +262,19 @@ func Keys() []string {
 		"session_cutoff_ms",
 		"anomaly_window",
 		"anomaly_sigma",
+		"session_patterns",
+		"long_task_patterns",
 	}
+}
+
+func parseCommaList(value string) []string {
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }

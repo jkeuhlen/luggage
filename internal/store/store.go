@@ -16,26 +16,28 @@ type Store struct {
 }
 
 type Run struct {
-	StartedAtMs int64
-	EndedAtMs   int64
-	DurationMs  float64
-	TypedCmd    string
-	ResolvedCmd string
-	ExitCode    int
-	Cwd         string
-	GitRoot     string
-	IsSession   bool
+	StartedAtMs          int64
+	EndedAtMs            int64
+	DurationMs           float64
+	TypedCmd             string
+	ResolvedCmd          string
+	ExitCode             int
+	Cwd                  string
+	GitRoot              string
+	IsSession            bool
+	ClassificationReason string
 }
 
 type RunRow struct {
-	StartedAt time.Time
-	Duration  float64
-	ExitCode  int
-	IsSession bool
-	TypedCmd  string
-	Resolved  string
-	Cwd       string
-	GitRoot   string
+	StartedAt            time.Time
+	Duration             float64
+	ExitCode             int
+	IsSession            bool
+	ClassificationReason string
+	TypedCmd             string
+	Resolved             string
+	Cwd                  string
+	GitRoot              string
 }
 
 func Open(dbPath string) (*Store, error) {
@@ -78,6 +80,7 @@ CREATE TABLE IF NOT EXISTS runs (
 	cwd TEXT NOT NULL,
 	git_root TEXT NOT NULL,
 	is_session INTEGER NOT NULL,
+	classification_reason TEXT NOT NULL DEFAULT 'legacy',
 	created_at_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_runs_typed_time ON runs(typed_cmd, started_at_ms);
@@ -86,7 +89,10 @@ CREATE INDEX IF NOT EXISTS idx_runs_time ON runs(started_at_ms);
 CREATE INDEX IF NOT EXISTS idx_runs_git_time ON runs(git_root, started_at_ms);
 CREATE INDEX IF NOT EXISTS idx_runs_session_time ON runs(is_session, started_at_ms);
 `)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.ensureRunColumn("classification_reason", "ALTER TABLE runs ADD COLUMN classification_reason TEXT NOT NULL DEFAULT 'legacy'")
 }
 
 func (s *Store) InsertRun(run Run) error {
@@ -94,13 +100,17 @@ func (s *Store) InsertRun(run Run) error {
 	if run.IsSession {
 		isSession = 1
 	}
+	classificationReason := strings.TrimSpace(run.ClassificationReason)
+	if classificationReason == "" {
+		classificationReason = "legacy"
+	}
 	_, err := s.db.Exec(`
 INSERT INTO runs (
 	started_at_ms, ended_at_ms, duration_ms,
 	typed_cmd, resolved_cmd_key, exit_code,
-	cwd, git_root, is_session, created_at_ms
+	cwd, git_root, is_session, classification_reason, created_at_ms
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `,
 		run.StartedAtMs,
 		run.EndedAtMs,
@@ -111,6 +121,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		run.Cwd,
 		run.GitRoot,
 		isSession,
+		classificationReason,
 		time.Now().UnixMilli(),
 	)
 	return err
@@ -150,7 +161,7 @@ func (s *Store) QueryRuns(opts QueryOptions) ([]RunRow, error) {
 	}
 
 	query := fmt.Sprintf(`
-SELECT started_at_ms, duration_ms, exit_code, is_session, typed_cmd, resolved_cmd_key, cwd, git_root
+SELECT started_at_ms, duration_ms, exit_code, is_session, classification_reason, typed_cmd, resolved_cmd_key, cwd, git_root
 FROM runs
 WHERE %s
 ORDER BY started_at_ms ASC
@@ -168,25 +179,55 @@ ORDER BY started_at_ms ASC
 		var duration float64
 		var exitCode int
 		var isSession int
+		var classificationReason string
 		var typed string
 		var resolved string
 		var cwd string
 		var gitRoot string
-		if err := rows.Scan(&startedMs, &duration, &exitCode, &isSession, &typed, &resolved, &cwd, &gitRoot); err != nil {
+		if err := rows.Scan(&startedMs, &duration, &exitCode, &isSession, &classificationReason, &typed, &resolved, &cwd, &gitRoot); err != nil {
 			return nil, err
 		}
 		out = append(out, RunRow{
-			StartedAt: time.UnixMilli(startedMs),
-			Duration:  duration,
-			ExitCode:  exitCode,
-			IsSession: isSession == 1,
-			TypedCmd:  typed,
-			Resolved:  resolved,
-			Cwd:       cwd,
-			GitRoot:   gitRoot,
+			StartedAt:            time.UnixMilli(startedMs),
+			Duration:             duration,
+			ExitCode:             exitCode,
+			IsSession:            isSession == 1,
+			ClassificationReason: classificationReason,
+			TypedCmd:             typed,
+			Resolved:             resolved,
+			Cwd:                  cwd,
+			GitRoot:              gitRoot,
 		})
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) ensureRunColumn(name, alterSQL string) error {
+	rows, err := s.db.Query("PRAGMA table_info(runs)")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var colName string
+		var colType string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &colName, &colType, &notNull, &defaultValue, &pk); err != nil {
+			return err
+		}
+		if colName == name {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = s.db.Exec(alterSQL)
+	return err
 }
 
 type SessionSummaryRow struct {

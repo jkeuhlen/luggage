@@ -1,11 +1,14 @@
 package app
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
+	"luggage/internal/config"
 	"luggage/internal/store"
 )
 
@@ -22,6 +25,93 @@ func TestParseEpochSecondsToMS(t *testing.T) {
 func TestFirstToken(t *testing.T) {
 	if got := firstToken("gs -sb"); got != "gs" {
 		t.Fatalf("expected gs, got %q", got)
+	}
+}
+
+func TestClassifyCommand(t *testing.T) {
+	cfg := config.Default()
+	cfg.SessionPatterns = []string{"make ghciwatch"}
+	cfg.LongTaskPatterns = []string{"nix-collect-garbage*", "nix build*"}
+
+	cases := []struct {
+		name      string
+		cmd       string
+		duration  int64
+		isSession bool
+		reason    string
+	}{
+		{name: "pattern session", cmd: "make ghciwatch", duration: 10, isSession: true, reason: classificationPatternSession},
+		{name: "pattern long task", cmd: "nix-collect-garbage -d", duration: 10, isSession: false, reason: classificationPatternLongTask},
+		{name: "heuristic session", cmd: "cabal repl", duration: 10, isSession: true, reason: classificationHeuristicSession},
+		{name: "heuristic long task", cmd: "stack build", duration: 10, isSession: false, reason: classificationHeuristicLongTask},
+		{name: "duration long task", cmd: "custom maintenance", duration: cfg.SessionCutoffMs, isSession: false, reason: classificationDurationLongTask},
+		{name: "normal duration", cmd: "gs -sb", duration: 20, isSession: false, reason: classificationNormalDuration},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := classifyCommand(cfg, tc.cmd, tc.duration)
+			if got.IsSession != tc.isSession || got.Reason != tc.reason {
+				t.Fatalf("classifyCommand(%q) = %+v, want session=%v reason=%s", tc.cmd, got, tc.isSession, tc.reason)
+			}
+		})
+	}
+}
+
+func TestClassifyCommandSessionPatternPrecedence(t *testing.T) {
+	cfg := config.Default()
+	cfg.SessionPatterns = []string{"make *"}
+	cfg.LongTaskPatterns = []string{"make ghciwatch"}
+
+	got := classifyCommand(cfg, "make ghciwatch", 10)
+	if !got.IsSession || got.Reason != classificationPatternSession {
+		t.Fatalf("expected session pattern precedence, got %+v", got)
+	}
+}
+
+func TestRunRecordKeepsUnknownLongCommandInNormalReports(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	var stdout, stderr bytes.Buffer
+	a := New(&stdout, &stderr)
+	start := time.Now().Add(-time.Hour)
+	code := a.Run([]string{
+		"record",
+		"--started-at", strconv.FormatInt(start.Unix(), 10),
+		"--ended-at", strconv.FormatInt(start.Add(10*time.Minute).Unix(), 10),
+		"--typed", "custom maintenance",
+		"--resolved", "exec:/usr/local/bin/custom",
+		"--exit-code", "0",
+		"--cwd", t.TempDir(),
+	})
+	if code != 0 {
+		t.Fatalf("record exited %d, stderr=%q", code, stderr.String())
+	}
+
+	dbPath, err := config.DBPath()
+	if err != nil {
+		t.Fatalf("db path: %v", err)
+	}
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	rows, err := st.QueryRuns(store.QueryOptions{
+		Start:           start.Add(-time.Minute),
+		Query:           "custom",
+		View:            "typed",
+		IncludeSessions: false,
+	})
+	if err != nil {
+		t.Fatalf("query runs: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected long task to be visible in normal report queries, got %d rows", len(rows))
+	}
+	if rows[0].IsSession || rows[0].ClassificationReason != classificationDurationLongTask {
+		t.Fatalf("unexpected row classification: %+v", rows[0])
 	}
 }
 

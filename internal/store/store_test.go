@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -77,6 +78,96 @@ func TestQueryRunsFilters(t *testing.T) {
 	}
 	if byRepo[0].Duration != 20 {
 		t.Fatalf("expected duration 20 for repo filter, got %v", byRepo[0].Duration)
+	}
+}
+
+func TestQueryRunsReturnsClassificationReason(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "classification.db")
+	st, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	now := time.Now().Add(-time.Minute).UnixMilli()
+	if err := st.InsertRun(Run{
+		StartedAtMs:          now,
+		EndedAtMs:            now + 20,
+		DurationMs:           20,
+		TypedCmd:             "gs",
+		ResolvedCmd:          "exec:/usr/bin/git",
+		ExitCode:             0,
+		Cwd:                  "/repo",
+		GitRoot:              "/repo",
+		ClassificationReason: "normal_duration",
+	}); err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+
+	rows, err := st.QueryRuns(QueryOptions{Start: time.UnixMilli(now - 1000), Query: "gs", View: "typed"})
+	if err != nil {
+		t.Fatalf("query runs: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
+	}
+	if rows[0].ClassificationReason != "normal_duration" {
+		t.Fatalf("expected classification reason, got %q", rows[0].ClassificationReason)
+	}
+}
+
+func TestOpenMigratesClassificationReasonColumn(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "legacy.db")
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	now := time.Now().Add(-time.Minute).UnixMilli()
+	_, err = db.Exec(`
+CREATE TABLE runs (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	started_at_ms INTEGER NOT NULL,
+	ended_at_ms INTEGER NOT NULL,
+	duration_ms REAL NOT NULL,
+	typed_cmd TEXT NOT NULL,
+	resolved_cmd_key TEXT NOT NULL,
+	exit_code INTEGER NOT NULL,
+	cwd TEXT NOT NULL,
+	git_root TEXT NOT NULL,
+	is_session INTEGER NOT NULL,
+	created_at_ms INTEGER NOT NULL
+);
+INSERT INTO runs (
+	started_at_ms, ended_at_ms, duration_ms,
+	typed_cmd, resolved_cmd_key, exit_code,
+	cwd, git_root, is_session, created_at_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+`, now, now+20, 20, "ghci", "exec:/usr/bin/ghci", 130, "/repo", "/repo", 1, now+30)
+	if err != nil {
+		_ = db.Close()
+		t.Fatalf("create legacy schema: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy db: %v", err)
+	}
+
+	st, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open migrated store: %v", err)
+	}
+	defer st.Close()
+
+	rows, err := st.QueryRuns(QueryOptions{Start: time.UnixMilli(now - 1000), Query: "ghci", View: "typed", IncludeSessions: true})
+	if err != nil {
+		t.Fatalf("query migrated rows: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 migrated row, got %d", len(rows))
+	}
+	if !rows[0].IsSession || rows[0].ClassificationReason != "legacy" {
+		t.Fatalf("unexpected migrated row: %+v", rows[0])
 	}
 }
 

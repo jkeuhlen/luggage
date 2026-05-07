@@ -119,6 +119,8 @@ luggage config get
 luggage config set default_days 120
 luggage config set default_granularity weekly
 luggage config set session_cutoff_ms 300000
+luggage config set session_patterns 'make ghciwatch,* repl,* watch*,* ghci*'
+luggage config set long_task_patterns 'nix-collect-garbage*,nix build*,cabal build*,stack build*'
 ```
 
 Version:
@@ -159,6 +161,7 @@ CI runs the same checks on every push/PR via `.github/workflows/ci.yml`.
 
 ## Notes
 
-- Commands longer than 5 minutes are classified as session commands by default.
+- Commands matching session patterns or REPL/watch/server heuristics are classified as sessions.
+- Commands longer than 5 minutes without a session signal are classified as long finite tasks and remain in normal reports.
 - `luggage time` excludes session commands unless `--include-sessions` is set.
 - Both typed and resolved command identities are stored.
